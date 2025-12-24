@@ -60,3 +60,12 @@ export interface LeaveRequest {
   type: 'SICK' | 'VACATION' | 'CASUAL';
   status: 'PENDING' | 'APPROVED' | 'REJECTED';
 }
+
+export interface Announcement {
+  id: string;
+  title: string;
+  content: string;
+  author: string;
+  date: string;
+  priority: 'NORMAL' | 'HIGH' | 'URGENT';
+}

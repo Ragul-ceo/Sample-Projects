@@ -1,674 +1,447 @@
 
-import React, { useState, useEffect } from 'react';
-import { User, UserRole, AttendanceRecord, Task, LeaveRequest, Project } from './types';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import { User, UserRole, AttendanceRecord, Task, LeaveRequest, Project, Announcement } from './types';
 import { db } from './services/mockDb';
 import Layout from './components/Layout';
 import CameraCapture from './components/CameraCapture';
+import Logo from './components/Logo';
 
 const App: React.FC = () => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [showCamera, setShowCamera] = useState(false);
+  const [showAddUserModal, setShowAddUserModal] = useState(false);
+  const [showAddTaskModal, setShowAddTaskModal] = useState(false);
+  const [showLeaveModal, setShowLeaveModal] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'OVERVIEW' | 'PROJECTS' | 'ATTENDANCE' | 'EMPLOYEES' | 'TASKS'>('OVERVIEW');
+  const [activeTab, setActiveTab] = useState<'OVERVIEW' | 'PROJECTS' | 'EMPLOYEES' | 'TASKS' | 'LEAVES' | 'SETTINGS'>('OVERVIEW');
   const [editingUser, setEditingUser] = useState<User | null>(null);
-  const [selectedMonth, setSelectedMonth] = useState<string>(() => {
-    const now = new Date();
-    return `${now.getFullYear()}-${(now.getMonth() + 1).toString().padStart(2, '0')}`;
-  });
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
   
   const [appState, setAppState] = useState({
     tasks: [] as Task[],
     attendance: [] as AttendanceRecord[],
     leaves: [] as LeaveRequest[],
     users: [] as User[],
-    projects: [] as Project[]
+    projects: [] as Project[],
+    announcements: [] as Announcement[]
   });
 
-  // Data refreshing effect
-  useEffect(() => {
-    const refresh = () => setAppState({
+  const refreshState = useCallback(() => {
+    db.load();
+    setAppState({
       tasks: db.getTasks(),
       attendance: db.getAttendance(),
       leaves: db.getLeaves(),
       users: db.getUsers(),
-      projects: db.getProjects()
+      projects: db.getProjects(),
+      announcements: db.getAnnouncements()
     });
-    refresh();
-    const interval = setInterval(refresh, 2500); // 2.5s poll
-    return () => clearInterval(interval);
   }, []);
 
-  const handleLogin = (e: React.FormEvent<HTMLFormElement>) => {
+  useEffect(() => {
+    refreshState();
+    const interval = setInterval(refreshState, 3000);
+    window.addEventListener('storage', refreshState);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('storage', refreshState);
+    };
+  }, [refreshState]);
+
+  const handleLogin = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    const formData = new FormData(e.currentTarget);
+    const username = (formData.get('username') as string || '').trim();
+    const password = (formData.get('password') as string || '').trim();
+
     setLoginError(null);
-    const fd = new FormData(e.currentTarget);
-    const username = (fd.get('username') as string || '').trim();
-    const password = (fd.get('password') as string || '').trim();
-
-    // Case-insensitive username check
-    const user = db.getUsers().find(u => 
-      u.username.toLowerCase() === username.toLowerCase() && 
-      u.password === password
-    );
-
+    setIsLoggingIn(true);
+    await new Promise(r => setTimeout(r, 800));
+    
+    db.load();
+    const user = db.getUsers().find(u => u.username.toLowerCase() === username.toLowerCase() && u.password === password);
+    
     if (!user) {
-      setLoginError('Invalid credentials. Please verify your username and password.');
+      setLoginError('Authentication failed. Check credentials.');
+      setIsLoggingIn(false);
     } else if (!user.isApproved) {
-      setLoginError('Your access has been revoked or is pending activation. Contact Admin.');
+      setLoginError('Account locked. Contact System Admin.');
+      setIsLoggingIn(false);
     } else {
       setCurrentUser(user);
+      setIsLoggingIn(false);
     }
   };
 
-  const handleUpdateUser = (e: React.FormEvent<HTMLFormElement>) => {
+  const handleAddUser = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (!editingUser) return;
     const fd = new FormData(e.currentTarget);
-    const updateData: Partial<User> = {
+    db.createUser({
       name: fd.get('name') as string,
-      email: fd.get('email') as string,
       username: fd.get('username') as string,
+      email: fd.get('email') as string,
       password: fd.get('password') as string,
       department: fd.get('department') as string,
       role: fd.get('role') as UserRole,
-      isApproved: fd.get('isApproved') === 'on'
-    };
-    db.updateUser(editingUser.id, updateData);
-    setEditingUser(null);
-    alert('SUCCESS: Employee profile and access updated in database.');
+      isApproved: true
+    });
+    refreshState();
+    setShowAddUserModal(false);
   };
+
+  const handleAddTask = (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const fd = new FormData(e.currentTarget);
+    db.addTask({
+      id: `t_${Date.now()}`,
+      title: fd.get('title') as string,
+      description: fd.get('description') as string,
+      assignedTo: fd.get('assignedTo') as string,
+      assignedBy: currentUser!.id,
+      projectId: fd.get('projectId') as string || 'p1',
+      status: 'TODO',
+      deadline: fd.get('deadline') as string
+    });
+    refreshState();
+    setShowAddTaskModal(false);
+  };
+
+  const handleRequestLeave = (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const fd = new FormData(e.currentTarget);
+    db.requestLeave({
+      id: `l_${Date.now()}`,
+      userId: currentUser!.id,
+      userName: currentUser!.name,
+      startDate: fd.get('startDate') as string,
+      endDate: fd.get('endDate') as string,
+      reason: fd.get('reason') as string,
+      type: fd.get('type') as any,
+      status: 'PENDING'
+    });
+    refreshState();
+    setShowLeaveModal(false);
+  };
+
+  const isHR = currentUser?.role === UserRole.HR;
+  const isAdmin = currentUser?.role === UserRole.ADMIN;
+  const canManage = isAdmin || isHR;
 
   if (!currentUser) {
     return (
-      <div className="min-h-screen bg-[#0f172a] flex flex-col items-center justify-center p-6">
-        <div className="w-full max-w-[420px] space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
-          <div className="text-center">
-            <h1 className="text-6xl font-black text-blue-500 tracking-tighter drop-shadow-lg">RAMINFOSYS</h1>
-            <p className="text-slate-400 mt-4 text-xs uppercase tracking-[0.4em] font-bold opacity-70">Secured Personnel Gateway</p>
+      <div className="min-h-screen bg-[#fcfdfe] flex items-center justify-center p-6 relative overflow-hidden">
+        <div className="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] bg-[#00599f] opacity-[0.03] blur-[120px] rounded-full"></div>
+        <div className="absolute bottom-[-10%] right-[-10%] w-[50%] h-[50%] bg-[#b11e31] opacity-[0.03] blur-[120px] rounded-full"></div>
+        
+        <div className="w-full max-w-[460px] z-10 animate-in fade-in zoom-in duration-700">
+          <div className="flex flex-col items-center mb-12">
+            <Logo className="h-52 float-anim mb-4" />
           </div>
           
-          <div className="bg-white rounded-[40px] p-10 shadow-2xl border border-white/20 relative overflow-hidden group">
-             <div className="absolute top-0 left-0 w-2 h-full bg-blue-500"></div>
-             <form onSubmit={handleLogin} className="space-y-6">
-              <div className="space-y-1">
-                <h2 className="text-2xl font-bold text-slate-800 tracking-tight">System Login</h2>
-                <p className="text-sm text-slate-400">Authenticating access to ERP v3.0</p>
-              </div>
-
-              {loginError && (
-                <div className="p-4 bg-red-50 text-red-600 rounded-2xl text-[11px] font-bold border border-red-100 animate-bounce">
-                  {loginError}
-                </div>
-              )}
-
-              <div className="space-y-4">
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Unique Username</label>
-                  <input name="username" placeholder="Username" required className="w-full p-4 bg-slate-50 border border-slate-100 rounded-2xl outline-none focus:ring-4 ring-blue-500/10 focus:bg-white transition" />
-                </div>
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Access Key</label>
-                  <input name="password" type="password" placeholder="••••••••" required className="w-full p-4 bg-slate-50 border border-slate-100 rounded-2xl outline-none focus:ring-4 ring-blue-500/10 focus:bg-white transition" />
-                </div>
-              </div>
-
-              <button className="w-full bg-blue-600 text-white font-black py-5 rounded-2xl hover:bg-blue-700 transition shadow-2xl shadow-blue-500/20 active:scale-[0.98]">
-                ESTABLISH SESSION
+          <div className="bg-white/80 backdrop-blur-2xl p-12 rounded-[56px] shadow-[0_40px_100px_-20px_rgba(0,0,0,0.1)] border border-white">
+            <h2 className="text-3xl font-black text-slate-900 tracking-tighter font-jakarta mb-8 text-center uppercase">Gateway Login</h2>
+            <form onSubmit={handleLogin} className="space-y-6">
+              <Input label="Network UID" name="username" placeholder="Username" required />
+              <Input label="Access Key" name="password" type="password" placeholder="••••••••" required />
+              
+              {loginError && <div className="text-rose-600 text-[12px] font-bold text-center bg-rose-50/80 py-3 rounded-2xl border border-rose-100">{loginError}</div>}
+              
+              <button disabled={isLoggingIn} className="w-full bg-[#00599f] text-white font-black py-5.5 rounded-[24px] hover:bg-[#004a85] transition-all shadow-xl shadow-blue-900/20 uppercase tracking-[0.2em] text-[11px] flex items-center justify-center gap-3">
+                {isLoggingIn ? <div className="w-5 h-5 border-2 border-white/20 border-t-white rounded-full animate-spin"></div> : 'Authorize Access'}
               </button>
             </form>
-
-            <div className="mt-10 pt-8 border-t border-slate-100 text-[10px] text-center text-slate-400 font-medium">
-              <p>Demo Admin: admin / password123</p>
-            </div>
           </div>
+          <p className="mt-12 text-center text-slate-300 text-[10px] font-bold tracking-[0.4em] uppercase">Secured by Ram Infosys • v5.3.0</p>
         </div>
       </div>
     );
   }
 
-  const navTabs = (currentUser.role === UserRole.ADMIN) 
-    ? ['OVERVIEW', 'PROJECTS', 'ATTENDANCE', 'EMPLOYEES', 'TASKS'] 
-    : ['OVERVIEW', 'PROJECTS', 'ATTENDANCE', 'TASKS'];
-
-  // Filter attendance by selected month for the table view
-  const filteredAttendance = appState.attendance.filter(a => {
-    const d = new Date(a.checkIn);
-    const y = d.getFullYear();
-    const m = (d.getMonth() + 1).toString().padStart(2, '0');
-    return `${y}-${m}` === selectedMonth;
-  });
-
   return (
-    <Layout user={currentUser} onLogout={() => setCurrentUser(null)}>
-      {/* MANAGEMENT SUB-NAVIGATION */}
-      {(currentUser.role === UserRole.HR || currentUser.role === UserRole.ADMIN) && (
-        <div className="flex gap-2 mb-10 bg-white p-2.5 rounded-[30px] border border-slate-200 shadow-sm no-scrollbar overflow-x-auto">
-          {navTabs.map(t => (
-            <button 
-              key={t}
-              onClick={() => setActiveTab(t as any)}
-              className={`px-8 py-4 rounded-[22px] text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === t ? 'bg-slate-900 text-white shadow-xl translate-y-[-2px]' : 'text-slate-400 hover:text-slate-600 hover:bg-slate-50'}`}
-            >
-              {t}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* HR & ADMIN CONTROL CENTERS */}
-      {(currentUser.role === UserRole.HR || currentUser.role === UserRole.ADMIN) && (
-        <div className="space-y-10 animate-in fade-in duration-500">
-          
-          {/* TAB: OVERVIEW */}
-          {activeTab === 'OVERVIEW' && (
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-              <div className="lg:col-span-2 space-y-8">
-                <section className="bg-white rounded-[40px] p-10 border border-slate-100 shadow-sm relative">
-                  <div className="flex justify-between items-center mb-10">
-                    <div>
-                      <h3 className="text-2xl font-black text-slate-800 tracking-tight">Active Check-in Queue</h3>
-                      <p className="text-xs text-slate-400 font-medium">Verification required for employee presence logs</p>
-                    </div>
-                    <button 
-                      onClick={() => db.exportAttendanceCSV()}
-                      className="bg-green-600 text-white px-6 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-green-700 transition shadow-xl shadow-green-500/20 flex items-center gap-2"
-                    >
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M4 16v1a2 2 0 002 2h12a2 2 0 002-2v-1M7 10l5 5m0 0l5-5m-5 5V3"></path></svg>
-                      DOWNLOAD ALL
-                    </button>
-                  </div>
-                  <div className="space-y-5 max-h-[500px] overflow-y-auto pr-2 custom-scrollbar">
-                    {appState.attendance.filter(a => a.status === 'PENDING').map(a => (
-                      <div key={a.id} className="flex items-center justify-between p-6 bg-slate-50 rounded-[35px] border border-slate-100 group hover:border-blue-200 transition-all">
-                        <div className="flex items-center gap-6">
-                          <div className="relative">
-                            <img src={a.faceCapture} className="w-20 h-20 rounded-[25px] object-cover border-4 border-white shadow-xl group-hover:scale-105 transition" alt="Face" />
-                            <div className="absolute -bottom-1 -right-1 w-6 h-6 bg-blue-500 border-4 border-white rounded-full"></div>
-                          </div>
-                          <div>
-                            <p className="font-black text-slate-800 text-xl leading-tight">{a.userName}</p>
-                            <p className="text-[11px] text-slate-400 font-bold uppercase tracking-[0.15em] mt-1.5 flex items-center gap-2">
-                              <span className="w-1.5 h-1.5 rounded-full bg-slate-300"></span>
-                              {a.checkIn}
-                            </p>
-                          </div>
-                        </div>
-                        <div className="flex gap-3">
-                          <button onClick={() => db.approveAttendance(a.id, 'APPROVED')} className="h-14 w-14 flex items-center justify-center bg-white text-green-500 border-2 border-slate-100 rounded-2xl hover:bg-green-500 hover:text-white hover:border-green-500 transition-all shadow-sm font-black text-xl">
-                             ✓
-                          </button>
-                          <button onClick={() => db.approveAttendance(a.id, 'REJECTED')} className="h-14 w-14 flex items-center justify-center bg-white text-red-400 border-2 border-slate-100 rounded-2xl hover:bg-red-500 hover:text-white hover:border-red-500 transition-all shadow-sm font-black text-xl">
-                             ✕
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                    {appState.attendance.filter(a => a.status === 'PENDING').length === 0 && (
-                      <div className="text-center py-24 grayscale opacity-40">
-                        <div className="text-6xl mb-6">📂</div>
-                        <p className="text-sm font-black uppercase tracking-[0.3em] text-slate-800">Operational Queue Clear</p>
-                      </div>
-                    )}
-                  </div>
-                </section>
-              </div>
-
-              <div className="space-y-8">
-                <div className="bg-slate-900 p-10 rounded-[50px] text-white shadow-3xl relative overflow-hidden group">
-                  <div className="absolute -top-10 -right-10 w-40 h-40 bg-blue-500/20 rounded-full blur-[60px] group-hover:scale-125 transition duration-700"></div>
-                  <p className="text-blue-400 text-[10px] font-black uppercase tracking-[0.3em] mb-4">Personnel Activated</p>
-                  <h4 className="text-7xl font-black mt-2 tracking-tighter">{appState.users.filter(u => u.isApproved).length}</h4>
-                  <div className="mt-12 pt-8 border-t border-white/5 flex flex-col gap-4">
-                     <div className="flex justify-between items-center text-[11px] font-black uppercase tracking-widest text-slate-500">
-                        <span>Total Records</span>
-                        <span>{appState.attendance.length} Logs</span>
-                     </div>
-                     <button 
-                       onClick={() => db.exportAttendanceCSV()}
-                       className="w-full bg-white/5 hover:bg-white/10 text-white text-[10px] font-black py-4 rounded-2xl transition tracking-widest"
-                     >
-                       DOWNLOAD FULL DATABASE
-                     </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* TAB: ATTENDANCE DATABASE */}
-          {activeTab === 'ATTENDANCE' && (
-            <div className="bg-white rounded-[50px] p-12 border border-slate-100 shadow-sm animate-in fade-in duration-500">
-              <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center mb-12 gap-8">
-                <div>
-                  <h3 className="text-3xl font-black text-slate-800 tracking-tight">Attendance Intelligence</h3>
-                  <p className="text-slate-400 font-medium text-sm mt-1">Audit-ready historical records with monthly precision</p>
-                </div>
-                
-                <div className="flex flex-wrap items-center gap-4 bg-slate-50 p-4 rounded-[30px] border border-slate-100 shadow-inner">
-                  <div className="flex flex-col gap-1 px-4">
-                    <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Reporting Month</label>
-                    <input 
-                      type="month" 
-                      value={selectedMonth}
-                      onChange={(e) => setSelectedMonth(e.target.value)}
-                      className="bg-transparent border-none outline-none font-black text-slate-700 text-sm cursor-pointer"
-                    />
-                  </div>
-                  <div className="h-10 w-[1px] bg-slate-200 mx-2"></div>
-                  <div className="flex gap-2">
-                    <button 
-                      onClick={() => db.exportMonthlyAttendanceCSV(selectedMonth)}
-                      className="bg-blue-600 text-white px-6 py-3.5 rounded-[20px] text-[10px] font-black uppercase tracking-[0.2em] hover:bg-blue-700 transition shadow-xl flex items-center gap-2"
-                    >
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
-                      MONTHLY CSV
-                    </button>
-                    <button 
-                      onClick={() => db.exportAttendanceCSV()}
-                      className="bg-slate-900 text-white px-6 py-3.5 rounded-[20px] text-[10px] font-black uppercase tracking-[0.2em] hover:bg-slate-800 transition shadow-xl flex items-center gap-2"
-                    >
-                      MASTER LOG
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              <div className="overflow-x-auto rounded-[30px] border border-slate-100">
-                <table className="w-full text-left">
-                  <thead>
-                    <tr className="bg-slate-50 text-slate-500 text-[11px] font-black uppercase tracking-[0.2em]">
-                      <th className="py-6 pl-8">Employee Identity</th>
-                      <th className="py-6">Time-Stamp</th>
-                      <th className="py-6">Verification</th>
-                      <th className="py-6 text-right pr-8">Geo-Signature</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-50">
-                    {filteredAttendance.map(a => {
-                      const user = appState.users.find(u => u.id === a.userId);
-                      return (
-                        <tr key={a.id} className="group hover:bg-slate-50/50 transition duration-300">
-                          <td className="py-7 pl-8">
-                            <div className="flex items-center gap-4">
-                               <div className="w-10 h-10 bg-slate-100 rounded-2xl flex items-center justify-center font-black text-slate-500 text-xs">
-                                 {a.userName.charAt(0)}
-                               </div>
-                               <div>
-                                 <p className="font-black text-slate-800 text-sm">{a.userName}</p>
-                                 <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">{user?.username}</p>
-                               </div>
-                            </div>
-                          </td>
-                          <td className="py-7 text-xs text-slate-600 font-mono tracking-tighter">
-                            {a.checkIn}
-                          </td>
-                          <td className="py-7">
-                            <span className={`px-5 py-2 rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-sm ${a.status === 'APPROVED' ? 'bg-green-100 text-green-700' : a.status === 'REJECTED' ? 'bg-red-100 text-red-700' : 'bg-blue-50 text-blue-600'}`}>
-                              {a.status}
-                            </span>
-                          </td>
-                          <td className="py-7 text-right pr-8">
-                            <div className="text-[11px] font-bold text-slate-400 flex flex-col items-end gap-1">
-                               <span className="bg-slate-100 px-2 py-0.5 rounded uppercase text-[8px]">Lat: {a.latitude.toFixed(5)}</span>
-                               <span className="bg-slate-100 px-2 py-0.5 rounded uppercase text-[8px]">Lon: {a.longitude.toFixed(5)}</span>
-                            </div>
-                          </td>
-                        </tr>
-                      )
-                    })}
-                    {filteredAttendance.length === 0 && (
-                      <tr><td colSpan={4} className="py-32 text-center text-slate-300 font-black uppercase text-xs tracking-[0.4em]">No records found for {selectedMonth}</td></tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {/* TAB: PROJECTS (Workforce Mapping) */}
-          {activeTab === 'PROJECTS' && (
-            <div className="space-y-12 animate-in slide-in-from-bottom-6 duration-700">
+    <Layout user={currentUser} onLogout={() => setCurrentUser(null)} activeTab={activeTab} onTabChange={setActiveTab}>
+      <div className="space-y-12 animate-in fade-in slide-in-from-bottom-6 duration-700 pb-20">
+        
+        {/* DASHBOARD */}
+        {activeTab === 'OVERVIEW' && (
+          <div className="space-y-12">
+            <header className="flex flex-col sm:flex-row justify-between items-end gap-6">
               <div>
-                <h3 className="text-4xl font-black text-slate-800 tracking-tighter">Resource Allocation</h3>
-                <p className="text-slate-400 font-medium mt-2">Mapping personnel to active enterprise projects</p>
+                <h1 className="text-5xl font-black text-slate-900 tracking-tighter font-jakarta">Dashboard</h1>
+                <p className="text-slate-500 font-medium text-lg mt-1">Status briefing for identity node: {currentUser.name}</p>
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-10">
-                {appState.projects.map(p => (
-                  <div key={p.id} className="bg-white rounded-[50px] p-10 border border-slate-100 shadow-sm hover:shadow-2xl transition duration-500 group">
-                    <div className="flex justify-between items-start mb-10">
-                      <div>
-                        <h4 className="text-2xl font-black text-slate-800 tracking-tight group-hover:text-blue-600 transition">{p.name}</h4>
-                        <p className="text-[10px] text-slate-400 font-black uppercase tracking-[0.3em] mt-1">{p.client}</p>
-                      </div>
-                      <span className="bg-slate-900 text-white text-[9px] font-black px-4 py-2 rounded-full uppercase tracking-widest shadow-lg">{p.status}</span>
-                    </div>
-                    <div className="space-y-5">
-                      <p className="text-[11px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-50 pb-4">Assigned Personnel</p>
-                      <div className="grid grid-cols-1 gap-3">
-                        {p.team.map(uid => {
-                          const user = appState.users.find(u => u.id === uid);
-                          return (
-                            <div key={uid} className="flex items-center justify-between p-3 bg-slate-50 rounded-2xl">
-                              <div className="flex items-center gap-3">
-                                <div className="w-8 h-8 rounded-xl bg-blue-500 text-white flex items-center justify-center font-black text-[10px]">
-                                  {user?.name.charAt(0)}
-                                </div>
-                                <span className="text-sm font-bold text-slate-700">{user?.name}</span>
-                              </div>
-                              <span className="text-[8px] font-black text-slate-300 uppercase">{user?.department}</span>
-                            </div>
-                          )
-                        })}
-                        {p.team.length === 0 && <p className="text-xs text-slate-300 italic py-2">No staff assigned</p>}
-                      </div>
-                    </div>
-                  </div>
-                ))}
+              <div className="bg-white px-6 py-4 rounded-[28px] shadow-sm border border-slate-100 flex items-center gap-4">
+                <div className="w-3 h-3 rounded-full bg-emerald-500 animate-pulse"></div>
+                <span className="text-[12px] font-black text-slate-500 uppercase tracking-widest">{new Date().toDateString()}</span>
               </div>
-            </div>
-          )}
+            </header>
 
-          {/* TAB: EMPLOYEES (Directory & Access) */}
-          {activeTab === 'EMPLOYEES' && currentUser.role === UserRole.ADMIN && (
-            <div className="bg-white rounded-[50px] p-12 border border-slate-100 shadow-sm animate-in zoom-in-95 duration-500">
-              <div className="flex justify-between items-center mb-12">
-                <div>
-                  <h3 className="text-3xl font-black text-slate-800 tracking-tight">Identity & Access Management</h3>
-                  <p className="text-slate-400 font-medium text-sm mt-1">Global administrative override for all personnel</p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-8">
+              <StatCard label="Total Force" value={appState.users.length} icon="users" color="blue" />
+              <StatCard label="Live Units" value={appState.projects.filter(p => p.status === 'ACTIVE').length} icon="layers" color="indigo" />
+              <StatCard label="Pending Logs" value={appState.attendance.filter(a => a.status === 'PENDING').length} icon="clock" color="amber" />
+              <StatCard label="Milestones" value={appState.tasks.filter(t => t.status !== 'COMPLETED').length} icon="check-square" color="rose" />
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-10">
+              <div className="lg:col-span-8 bg-white rounded-[48px] p-10 lg:p-14 border border-slate-100 shadow-sm relative overflow-hidden">
+                <div className="flex justify-between items-center mb-12">
+                  <h3 className="text-2xl font-black text-slate-900 font-jakarta tracking-tight">Biometric Log Verification</h3>
+                  <button onClick={refreshState} className="p-3 text-slate-400 hover:text-[#00599f] transition"><svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg></button>
                 </div>
-                <div className="text-right">
-                   <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Total Users</p>
-                   <span className="text-2xl font-black text-blue-600">{appState.users.length}</span>
+                <div className="space-y-6 max-h-[500px] overflow-y-auto pr-4 custom-scrollbar">
+                  {appState.attendance.filter(a => canManage ? a.status === 'PENDING' : a.userId === currentUser.id).map(a => (
+                    <div key={a.id} className="group flex items-center justify-between p-7 bg-slate-50/50 rounded-[40px] border border-transparent hover:border-slate-100 hover:bg-white hover:shadow-2xl transition-all duration-500">
+                      <div className="flex items-center gap-6">
+                        <img src={a.faceCapture} className="w-20 h-20 rounded-[28px] object-cover border-4 border-white shadow-xl group-hover:scale-105 transition" alt="Face" />
+                        <div>
+                          <p className="font-black text-slate-900 text-xl tracking-tight">{a.userName}</p>
+                          <p className="text-[11px] text-slate-400 font-bold uppercase tracking-widest mt-1 flex items-center gap-2"><span className="w-1.5 h-1.5 rounded-full bg-blue-500"></span> {a.checkIn}</p>
+                        </div>
+                      </div>
+                      <div className="flex gap-3">
+                        {canManage ? (
+                          <>
+                            <button onClick={() => db.approveAttendance(a.id, 'APPROVED')} className="px-7 py-3.5 bg-[#00599f] text-white rounded-[20px] font-black text-[10px] uppercase tracking-widest">Verify</button>
+                            <button onClick={() => db.approveAttendance(a.id, 'REJECTED')} className="px-7 py-3.5 bg-rose-50 text-rose-600 rounded-[20px] font-black text-[10px] uppercase tracking-widest">Deny</button>
+                          </>
+                        ) : (
+                          <span className={`px-7 py-3.5 rounded-[20px] text-[10px] font-black uppercase tracking-widest border ${a.status === 'APPROVED' ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : 'bg-amber-50 text-amber-600 border-amber-100'}`}>{a.status}</span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
-              <div className="overflow-x-auto rounded-[35px] border border-slate-100 overflow-hidden">
-                <table className="w-full text-left">
-                  <thead>
-                    <tr className="bg-slate-900 text-slate-400 text-[11px] font-black uppercase tracking-[0.2em]">
-                      <th className="py-7 pl-10">Employee Record</th>
-                      <th className="py-7">Authentication</th>
-                      <th className="py-7">System Role</th>
-                      <th className="py-7">Access Status</th>
-                      <th className="py-7 text-right pr-10">Administrative</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-50">
-                    {appState.users.map(u => (
-                      <tr key={u.id} className="group hover:bg-slate-50 transition duration-300">
-                        <td className="py-8 pl-10">
-                           <div className="flex items-center gap-5">
-                              <div className="w-14 h-14 bg-blue-50 text-blue-600 rounded-[22px] flex items-center justify-center font-black text-xl border-4 border-white shadow-lg">
-                                {u.name.charAt(0)}
-                              </div>
-                              <div>
-                                <p className="font-black text-slate-800 text-lg leading-tight">{u.name}</p>
-                                <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-1">{u.department}</p>
-                              </div>
-                           </div>
-                        </td>
-                        <td className="py-8">
-                           <div className="flex flex-col gap-1">
-                              <p className="text-xs font-bold text-slate-600">@{u.username}</p>
-                              <p className="text-[10px] font-mono text-blue-500 bg-blue-50 px-2 py-0.5 rounded w-fit">{u.password}</p>
-                           </div>
-                        </td>
-                        <td className="py-8">
-                           <span className={`text-[9px] font-black px-4 py-2 rounded-full uppercase tracking-widest ${u.role === UserRole.ADMIN ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-600'}`}>
-                             {u.role}
-                           </span>
-                        </td>
-                        <td className="py-8">
-                           <div className="flex items-center gap-2.5">
-                              <div className={`w-3 h-3 rounded-full ${u.isApproved ? 'bg-green-500 shadow-[0_0_10px_rgba(34,197,94,0.5)]' : 'bg-red-400 shadow-[0_0_10px_rgba(248,113,113,0.5)]'}`}></div>
-                              <span className={`text-[10px] font-black uppercase tracking-widest ${u.isApproved ? 'text-green-600' : 'text-red-500'}`}>
-                                {u.isApproved ? 'ACTIVE' : 'REVOKED'}
-                              </span>
-                           </div>
-                        </td>
-                        <td className="py-8 text-right pr-10">
-                          <button 
-                            onClick={() => setEditingUser(u)} 
-                            className="bg-white border-2 border-slate-100 text-slate-400 text-[10px] font-black px-6 py-3 rounded-2xl hover:text-blue-600 hover:border-blue-600 transition-all uppercase tracking-widest"
-                          >
-                            OVERRIDE
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
 
-          {/* TAB: TASKS (Management & Provisioning) */}
-          {activeTab === 'TASKS' && (
-             <div className="grid grid-cols-1 lg:grid-cols-2 gap-10">
-              <section className="bg-white rounded-[50px] p-12 border border-slate-100 shadow-sm">
-                <h3 className="text-2xl font-black text-slate-800 mb-10 tracking-tight">System Account Provisioning</h3>
-                <form onSubmit={(e) => {
-                  e.preventDefault();
-                  const f = new FormData(e.currentTarget);
-                  db.createUser({
-                    name: String(f.get('name')),
-                    username: (f.get('username') as string).trim(),
-                    password: (f.get('password') as string).trim(),
-                    department: String(f.get('department')),
-                    role: f.get('role') as UserRole,
-                    isApproved: true // Admin created users are auto-approved
-                  });
-                  (e.target as HTMLFormElement).reset();
-                  alert('DATABASE SYNC: Employee account established and activated.');
-                }} className="space-y-6">
-                  <div className="space-y-2">
-                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Legal Full Name</label>
-                    <input name="name" placeholder="E.g. Alexander Pierce" required className="w-full p-5 bg-slate-50 rounded-3xl border border-slate-100 outline-none focus:ring-4 ring-blue-500/10 focus:bg-white transition" />
-                  </div>
-                  <div className="grid grid-cols-2 gap-6">
-                    <div className="space-y-2">
-                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Access Username</label>
-                      <input name="username" placeholder="a_pierce" required className="w-full p-5 bg-slate-50 rounded-3xl border border-slate-100 outline-none" />
-                    </div>
-                    <div className="space-y-2">
-                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Initial Key</label>
-                      <input name="password" placeholder="Pass123!" required className="w-full p-5 bg-slate-50 rounded-3xl border border-slate-100 outline-none" />
+              <div className="lg:col-span-4 space-y-10">
+                {isEmployee && (
+                  <div className="bg-gradient-to-br from-[#00599f] to-[#004a85] rounded-[48px] p-12 text-white shadow-2xl relative overflow-hidden group">
+                    <div className="relative z-10">
+                      <h3 className="text-3xl font-black mb-4 tracking-tighter leading-tight font-jakarta">IDENTITY<br/>PROTOCOL</h3>
+                      <p className="text-white/70 text-sm mb-12 font-medium">Verify your presence via biometric and GPS telemetry.</p>
+                      <button onClick={() => setShowCamera(true)} className="w-full bg-white text-[#00599f] font-black py-5 rounded-[22px] hover:shadow-2xl transition-all uppercase tracking-widest text-[11px]">Start Session</button>
                     </div>
                   </div>
-                  <div className="grid grid-cols-2 gap-6">
-                    <div className="space-y-2">
-                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Dept. ID</label>
-                      <input name="department" placeholder="Engineering" required className="w-full p-5 bg-slate-50 rounded-3xl border border-slate-100 outline-none" />
-                    </div>
-                    <div className="space-y-2">
-                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Access Level</label>
-                      <select name="role" className="w-full p-5 bg-slate-50 rounded-3xl border border-slate-100 outline-none font-black text-[10px] uppercase tracking-widest">
-                        <option value={UserRole.EMPLOYEE}>Standard Employee</option>
-                        <option value={UserRole.HR}>HR Manager</option>
-                        <option value={UserRole.ADMIN}>System Admin</option>
-                      </select>
-                    </div>
-                  </div>
-                  <button className="w-full bg-blue-600 text-white font-black py-6 rounded-[30px] hover:bg-blue-700 transition shadow-2xl shadow-blue-500/20 uppercase tracking-[0.2em] text-xs">ESTABLISH IDENTITY</button>
-                </form>
-              </section>
-
-              <section className="bg-white rounded-[50px] p-12 border border-slate-100 shadow-sm">
-                <h3 className="text-2xl font-black text-slate-800 mb-10 tracking-tight">Milestone Delegation</h3>
-                <form onSubmit={(e) => {
-                  e.preventDefault();
-                  const f = new FormData(e.currentTarget);
-                  db.addTask({
-                    id: Math.random().toString(36).substr(2, 9),
-                    title: String(f.get('title')),
-                    description: String(f.get('desc')),
-                    assignedTo: String(f.get('to')),
-                    assignedBy: currentUser.id,
-                    projectId: String(f.get('project')),
-                    status: 'TODO',
-                    deadline: String(f.get('deadline'))
-                  });
-                  (e.target as HTMLFormElement).reset();
-                  alert('DISPATCH: Milestone synchronized with employee calendar.');
-                }} className="space-y-6">
-                  <div className="space-y-2">
-                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Objective Title</label>
-                    <input name="title" placeholder="Backend Refactor..." required className="w-full p-5 bg-slate-50 rounded-3xl border border-slate-100 outline-none focus:ring-4 ring-blue-500/10 focus:bg-white transition" />
-                  </div>
-                  <textarea name="desc" placeholder="Operational details and requirements..." className="w-full p-5 bg-slate-50 rounded-3xl border border-slate-100 outline-none h-32" required />
-                  <div className="grid grid-cols-2 gap-6">
-                    <select name="to" required className="p-5 bg-slate-50 rounded-3xl border border-slate-100 outline-none text-[10px] font-black uppercase tracking-widest">
-                      <option value="">Staff Select...</option>
-                      {appState.users.filter(u => u.isApproved).map(u => <option key={u.id} value={u.id}>{u.name} (@{u.username})</option>)}
-                    </select>
-                    <select name="project" required className="p-5 bg-slate-50 rounded-3xl border border-slate-100 outline-none text-[10px] font-black uppercase tracking-widest">
-                      <option value="">Project Link...</option>
-                      {appState.projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                    </select>
-                  </div>
-                  <button className="w-full bg-slate-900 text-white font-black py-6 rounded-[30px] hover:bg-slate-800 transition shadow-2xl uppercase tracking-[0.2em] text-xs">DELEGATE OBJECTIVE</button>
-                </form>
-              </section>
-             </div>
-          )}
-        </div>
-      )}
-
-      {/* EMPLOYEE PORTAL INTERFACE */}
-      {currentUser.role === UserRole.EMPLOYEE && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 animate-in fade-in duration-500">
-          <div className="space-y-10">
-            <div className="bg-slate-900 rounded-[60px] p-16 text-white shadow-3xl relative overflow-hidden group">
-              <div className="absolute top-0 right-0 w-[450px] h-[450px] bg-blue-600/10 rounded-full blur-[120px] group-hover:bg-blue-600/20 transition duration-1000"></div>
-              <div className="relative z-10">
-                <h3 className="text-6xl font-black mb-8 tracking-tighter leading-none">CHECK-IN<br/>VERIFIED</h3>
-                <p className="text-slate-400 mb-16 text-xl font-medium opacity-80 max-w-sm">Secure biometric handshake and GPS location anchoring required to initiate shift logs.</p>
-                <button 
-                  onClick={() => setShowCamera(true)}
-                  className="w-full bg-blue-600 py-7 rounded-[35px] font-black text-2xl hover:bg-blue-500 transition-all shadow-2xl shadow-blue-500/40 active:scale-[0.96] tracking-tighter"
-                >
-                  START DAILY SHIFT
-                </button>
-              </div>
-            </div>
-            
-            <div className="bg-white rounded-[60px] p-14 border border-slate-100 shadow-sm">
-              <h4 className="font-black text-slate-800 uppercase text-[12px] tracking-[0.3em] mb-12 flex items-center gap-3">
-                <span className="w-2 h-2 rounded-full bg-blue-500"></span>
-                Session History
-              </h4>
-              <div className="space-y-5">
-                {appState.attendance.filter(a => a.userId === currentUser.id).slice(-4).reverse().map(a => (
-                  <div key={a.id} className="flex items-center justify-between p-7 bg-slate-50 rounded-[35px] border border-slate-50 transition hover:border-slate-200">
-                    <div className="flex items-center gap-6">
-                      <div className={`w-4 h-4 rounded-full ${a.status === 'APPROVED' ? 'bg-green-500 shadow-[0_0_15px_rgba(34,197,94,0.4)]' : 'bg-amber-400 animate-pulse'}`}></div>
-                      <div>
-                        <p className="text-lg font-black text-slate-700">{a.checkIn.split(', ')[0]}</p>
-                        <p className="text-[11px] text-slate-400 font-bold uppercase tracking-widest">{a.checkIn.split(', ')[1]}</p>
-                      </div>
-                    </div>
-                    <span className={`text-[11px] font-black uppercase tracking-widest px-4 py-1.5 rounded-full ${a.status === 'APPROVED' ? 'bg-green-100 text-green-600' : 'bg-blue-50 text-blue-600'}`}>
-                      {a.status}
-                    </span>
-                  </div>
-                ))}
-                {appState.attendance.filter(a => a.userId === currentUser.id).length === 0 && (
-                   <div className="py-20 text-center opacity-30 grayscale">
-                      <div className="text-5xl mb-4">⏱️</div>
-                      <p className="font-black uppercase tracking-widest text-xs">Awaiting first session today</p>
-                   </div>
                 )}
+                <div className="bg-white rounded-[48px] p-10 lg:p-12 border border-slate-100 shadow-sm">
+                  <h4 className="text-xl font-black text-slate-900 mb-8 font-jakarta">Transmissions</h4>
+                  <div className="space-y-8">
+                    {appState.announcements.slice(0, 3).map(ann => (
+                      <div key={ann.id} className="relative pl-8 before:absolute before:left-0 before:top-2 before:w-2 before:h-2 before:bg-blue-500 before:rounded-full">
+                        <p className="font-black text-slate-800 text-[15px] leading-snug">{ann.title}</p>
+                        <p className="text-[10px] text-slate-400 uppercase font-black tracking-widest mt-1">{new Date(ann.date).toLocaleDateString()}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </div>
             </div>
           </div>
+        )}
 
-          <div className="bg-white rounded-[60px] p-16 border border-slate-100 shadow-sm flex flex-col h-full">
-            <div className="flex justify-between items-start mb-16">
-               <h3 className="text-4xl font-black text-slate-800 tracking-tighter">PROJECT<br/>ROADMAP</h3>
-               <span className="bg-blue-50 text-blue-600 text-[10px] font-black px-5 py-2.5 rounded-2xl uppercase tracking-widest border border-blue-100 shadow-sm">
-                 {appState.projects.find(p => p.id === currentUser.currentProjectId)?.name || 'INTERNAL'}
-               </span>
-            </div>
-            <div className="space-y-12 flex-1 overflow-y-auto pr-4 custom-scrollbar">
-              {appState.tasks.filter(t => t.assignedTo === currentUser.id).map(task => (
-                <div key={task.id} className="group relative pl-12 border-l-4 border-slate-100 hover:border-blue-500 transition-all duration-700 pb-2">
-                  <div className="absolute -left-[10px] top-0 w-4 h-4 bg-white border-4 border-slate-200 rounded-full group-hover:border-blue-500 group-hover:scale-125 transition"></div>
-                  <h5 className="font-black text-slate-800 text-2xl group-hover:text-blue-600 transition tracking-tight">{task.title}</h5>
-                  <p className="text-slate-500 mt-4 text-base leading-relaxed font-medium opacity-80">{task.description}</p>
-                  <div className="mt-8 flex gap-10 text-[11px] font-black uppercase tracking-widest text-slate-400">
-                    <span className="flex items-center gap-2">📅 DEADLINE: {task.deadline}</span>
-                    <span className={`flex items-center gap-2 ${task.status === 'COMPLETED' ? 'text-green-600' : 'text-blue-600'}`}>
-                       STATUS: {task.status}
-                    </span>
+        {/* PLANNER (TASKS) */}
+        {activeTab === 'TASKS' && (
+          <div className="space-y-12">
+            <header className="flex justify-between items-center">
+              <div>
+                <h1 className="text-5xl font-black text-slate-900 tracking-tighter font-jakarta">Operational Planner</h1>
+                <p className="text-slate-500 font-medium text-lg mt-1">Orchestrating milestones and enterprise output.</p>
+              </div>
+              {canManage && (
+                <button onClick={() => setShowAddTaskModal(true)} className="bg-[#00599f] text-white px-10 py-5 rounded-[28px] font-black uppercase tracking-[0.2em] text-[11px] shadow-2xl shadow-blue-900/10">Assign Mission</button>
+              )}
+            </header>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+              {appState.tasks.filter(t => canManage ? true : t.assignedTo === currentUser.id).map(t => (
+                <div key={t.id} className={`p-10 rounded-[48px] border bg-white shadow-sm transition-all hover:shadow-2xl ${t.status === 'COMPLETED' ? 'opacity-50' : ''}`}>
+                  <div className="flex justify-between items-start mb-8">
+                    <span className={`px-4 py-1.5 rounded-full text-[9px] font-black uppercase tracking-widest ${t.status === 'COMPLETED' ? 'bg-emerald-50 text-emerald-600' : 'bg-blue-50 text-blue-600'}`}>{t.status}</span>
+                    <span className="text-[10px] text-slate-400 font-black tracking-[0.2em]">{t.deadline}</span>
                   </div>
-                  {task.status !== 'COMPLETED' && (
-                    <button 
-                      onClick={() => { db.updateTaskStatus(task.id, 'COMPLETED'); alert('SYNCED: Milestone successfully cleared in server.'); }}
-                      className="mt-8 text-[11px] font-black text-blue-600 border-b-2 border-blue-200 hover:border-blue-600 transition-all pb-1 tracking-[0.2em]"
-                    >
-                      SYNC AS COMPLETE
-                    </button>
-                  )}
+                  <h4 className="text-2xl font-black text-slate-800 font-jakarta leading-tight mb-4">{t.title}</h4>
+                  <p className="text-slate-500 text-sm leading-relaxed mb-10">{t.description}</p>
+                  <div className="pt-8 border-t border-slate-50 flex justify-between items-center">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center font-black text-slate-400 text-xs">
+                        {appState.users.find(u => u.id === t.assignedTo)?.name.charAt(0)}
+                      </div>
+                      <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Operator {appState.users.find(u => u.id === t.assignedTo)?.name.split(' ')[0]}</span>
+                    </div>
+                    {t.assignedTo === currentUser.id && t.status !== 'COMPLETED' && (
+                      <button onClick={() => db.updateTaskStatus(t.id, 'COMPLETED')} className="text-[#00599f] font-black text-[10px] uppercase tracking-widest border-b-2 border-blue-100">Complete</button>
+                    )}
+                  </div>
                 </div>
               ))}
-              {appState.tasks.filter(t => t.assignedTo === currentUser.id).length === 0 && (
-                <div className="py-40 text-center text-slate-300">
-                  <p className="text-sm font-black uppercase tracking-[0.5em]">Calendar Clear</p>
-                </div>
-              )}
             </div>
           </div>
-        </div>
+        )}
+
+        {/* ABSENCE REGISTRY (LEAVES) */}
+        {activeTab === 'LEAVES' && (
+          <div className="space-y-12">
+            <header className="flex justify-between items-center">
+              <div>
+                <h1 className="text-5xl font-black text-slate-900 tracking-tighter font-jakarta uppercase leading-none">Absence<br/>Registry</h1>
+                <p className="text-slate-500 font-medium text-lg mt-1">Management of operational availability.</p>
+              </div>
+              {!canManage && (
+                <button onClick={() => setShowLeaveModal(true)} className="bg-[#00599f] text-white px-10 py-5 rounded-[28px] font-black uppercase tracking-[0.2em] text-[11px] shadow-2xl">Request Absence</button>
+              )}
+            </header>
+
+            <div className="bg-white rounded-[56px] p-12 border border-slate-100 shadow-sm overflow-hidden">
+              <table className="w-full text-left min-w-[800px]">
+                <thead>
+                  <tr className="text-slate-300 text-[11px] font-black uppercase tracking-[0.3em] border-b border-slate-50">
+                    <th className="pb-10 px-4">Entity</th>
+                    <th className="pb-10 px-4">Type</th>
+                    <th className="pb-10 px-4">Interval</th>
+                    <th className="pb-10 px-4">Status</th>
+                    {canManage && <th className="pb-10 px-4 text-right">Action</th>}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-50">
+                  {appState.leaves.filter(l => canManage ? true : l.userId === currentUser.id).map(l => (
+                    <tr key={l.id} className="group hover:bg-slate-50/50 transition duration-500">
+                      <td className="py-10 px-4">
+                        <p className="font-black text-slate-900 text-[17px]">{l.userName}</p>
+                        <p className="text-[11px] text-slate-400 font-bold uppercase tracking-widest mt-0.5">{l.reason}</p>
+                      </td>
+                      <td className="py-10 px-4"><span className="text-slate-600 font-black uppercase text-[11px] tracking-widest bg-slate-100 px-4 py-1.5 rounded-lg">{l.type}</span></td>
+                      <td className="py-10 px-4 font-bold text-slate-500 text-sm">{l.startDate} → {l.endDate}</td>
+                      <td className="py-10 px-4">
+                        <span className={`px-6 py-2.5 rounded-2xl text-[10px] font-black uppercase tracking-widest ${l.status === 'APPROVED' ? 'bg-emerald-50 text-emerald-600' : l.status === 'REJECTED' ? 'bg-rose-50 text-rose-600' : 'bg-amber-50 text-amber-600'}`}>{l.status}</span>
+                      </td>
+                      {canManage && (
+                        <td className="py-10 px-4 text-right">
+                          {l.status === 'PENDING' && (
+                            <div className="flex gap-2 justify-end">
+                              <button onClick={() => db.updateLeaveStatus(l.id, 'APPROVED')} className="p-3 bg-emerald-50 text-emerald-600 rounded-xl hover:bg-emerald-600 hover:text-white transition">✓</button>
+                              <button onClick={() => db.updateLeaveStatus(l.id, 'REJECTED')} className="p-3 bg-rose-50 text-rose-600 rounded-xl hover:bg-rose-600 hover:text-white transition">✕</button>
+                            </div>
+                          )}
+                        </td>
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* PERSONNEL (EMPLOYEES) */}
+        {activeTab === 'EMPLOYEES' && canManage && (
+          <div className="bg-white rounded-[56px] p-16 border border-slate-100 shadow-sm animate-in slide-in-from-bottom-8">
+            <div className="flex flex-col sm:flex-row justify-between items-center gap-10 mb-20">
+              <h3 className="text-5xl font-black text-slate-900 tracking-tighter font-jakarta">Personnel Registry</h3>
+              <button onClick={() => setShowAddUserModal(true)} className="bg-[#00599f] text-white px-12 py-5.5 rounded-[32px] font-black uppercase tracking-[0.2em] text-[11px] shadow-2xl shadow-blue-900/20 active:scale-95">Onboard Personnel</button>
+            </div>
+            <div className="overflow-x-auto no-scrollbar">
+              <table className="w-full text-left min-w-[1000px]">
+                <thead>
+                  <tr className="text-slate-300 text-[11px] font-black uppercase tracking-[0.3em] border-b border-slate-50">
+                    <th className="pb-10 px-4">Entity Identity</th>
+                    <th className="pb-10 px-4">Cluster Unit</th>
+                    <th className="pb-10 px-4">Access Tier</th>
+                    <th className="pb-10 px-4 text-right">Operation</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-50">
+                  {appState.users.map(u => (
+                    <tr key={u.id} className="hover:bg-slate-50/50 transition group">
+                      <td className="py-12 px-4">
+                        <div className="flex items-center gap-6">
+                          <div className="w-16 h-16 bg-white border border-slate-100 text-[#00599f] rounded-[28px] flex items-center justify-center font-black text-2xl shadow-sm group-hover:bg-[#00599f] group-hover:text-white transition-all duration-500">{u.name.charAt(0)}</div>
+                          <div>
+                            <p className="font-black text-slate-900 text-xl tracking-tight">{u.name}</p>
+                            <p className="text-[11px] text-slate-400 font-bold uppercase tracking-[0.1em] mt-1 group-hover:text-[#00599f] transition-colors">@{u.username}</p>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="py-12 px-4"><span className="text-slate-600 font-black uppercase text-[12px] tracking-widest bg-slate-100 px-5 py-2.5 rounded-2xl border border-slate-200/50">{u.department}</span></td>
+                      <td className="py-12 px-4"><span className="bg-blue-50 text-[#00599f] px-6 py-3 rounded-[20px] text-[11px] font-black uppercase tracking-[0.2em]">{u.role}</span></td>
+                      <td className="py-12 px-4 text-right">
+                        <button onClick={() => setEditingUser(u)} className="text-slate-400 hover:text-[#00599f] transition font-black text-[11px] uppercase tracking-widest">Configure</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+      </div>
+
+      {/* MODALS */}
+      {showAddUserModal && (
+        <Modal onClose={() => setShowAddUserModal(false)} title="Initialize Identity">
+          <form onSubmit={handleAddUser} className="space-y-8">
+            <div className="grid grid-cols-2 gap-8">
+              <Input label="Full Identity Name" name="name" placeholder="John Doe" required />
+              <Input label="Network UID" name="username" placeholder="jdoe_sys" required />
+            </div>
+            <Input label="Initial Secret" name="password" type="password" placeholder="••••••••" required />
+            <div className="grid grid-cols-2 gap-8">
+              <Input label="Operational Cluster" name="department" placeholder="Engineering" required />
+              <div className="space-y-3">
+                <label className="text-[12px] font-black text-slate-400 uppercase tracking-[0.3em] ml-2">Access Tier</label>
+                <select name="role" className="w-full p-5 bg-slate-50 rounded-[28px] border border-slate-100 font-black uppercase text-[11px] tracking-widest outline-none focus:bg-white appearance-none transition-all">
+                  <option value={UserRole.EMPLOYEE}>Employee</option>
+                  <option value={UserRole.HR}>HR Executive</option>
+                  <option value={UserRole.ADMIN}>Administrator</option>
+                </select>
+              </div>
+            </div>
+            <button type="submit" className="w-full bg-[#00599f] text-white font-black py-6 rounded-[28px] uppercase tracking-widest text-[12px] shadow-2xl shadow-blue-900/20 hover:-translate-y-1 transition-all">Authorize Onboarding</button>
+          </form>
+        </Modal>
       )}
 
-      {/* GLOBAL ADMINISTRATIVE OVERRIDE MODAL */}
-      {editingUser && (
-        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-xl flex items-center justify-center z-[100] p-6 animate-in fade-in duration-300">
-          <div className="bg-white rounded-[60px] p-14 max-w-2xl w-full shadow-3xl border border-white/20 animate-in zoom-in-95 duration-500">
-            <h3 className="text-4xl font-black text-slate-800 mb-2 tracking-tighter leading-none">Credentials Override</h3>
-            <p className="text-sm text-slate-400 mb-12 font-medium">Overwriting identity metadata for: <span className="text-blue-600 font-bold">{editingUser.name}</span></p>
-            <form onSubmit={handleUpdateUser} className="space-y-8">
-              <div className="grid grid-cols-2 gap-8">
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black uppercase text-slate-400 ml-1">Legal Name</label>
-                  <input name="name" defaultValue={editingUser.name} required className="w-full p-5 bg-slate-50 rounded-[24px] border border-slate-100 outline-none" />
-                </div>
-                <div className="space-y-2">
-                   <label className="text-[10px] font-black uppercase text-slate-400 ml-1">System Username</label>
-                   <input name="username" defaultValue={editingUser.username} required className="w-full p-5 bg-slate-50 rounded-[24px] border border-slate-100 outline-none" />
-                </div>
+      {showAddTaskModal && (
+        <Modal onClose={() => setShowAddTaskModal(false)} title="Assign Mission">
+          <form onSubmit={handleAddTask} className="space-y-8">
+            <Input label="Mission Title" name="title" placeholder="Database Optimization" required />
+            <div className="space-y-3">
+              <label className="text-[12px] font-black text-slate-400 uppercase tracking-[0.3em] ml-2">Objective Description</label>
+              <textarea name="description" className="w-full p-5 bg-slate-50 rounded-[28px] border border-slate-100 font-medium outline-none focus:bg-white h-32 resize-none transition-all"></textarea>
+            </div>
+            <div className="grid grid-cols-2 gap-8">
+              <div className="space-y-3">
+                <label className="text-[12px] font-black text-slate-400 uppercase tracking-[0.3em] ml-2">Target Operator</label>
+                <select name="assignedTo" className="w-full p-5 bg-slate-50 rounded-[28px] border border-slate-100 font-black uppercase text-[11px] tracking-widest outline-none focus:bg-white appearance-none transition-all">
+                  {appState.users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+                </select>
               </div>
-              <div className="grid grid-cols-2 gap-8">
-                <div className="space-y-2">
-                   <label className="text-[10px] font-black uppercase text-blue-600 ml-1">Access Password</label>
-                   <input name="password" defaultValue={editingUser.password} required className="w-full p-5 bg-blue-50/50 rounded-[24px] border border-blue-200 outline-none font-mono text-blue-600 font-bold" />
-                </div>
-                <div className="space-y-2">
-                   <label className="text-[10px] font-black uppercase text-slate-400 ml-1">Corporate Department</label>
-                   <input name="department" defaultValue={editingUser.department} className="w-full p-5 bg-slate-50 rounded-[24px] border border-slate-100 outline-none" />
-                </div>
-              </div>
-              <div className="space-y-2">
-                  <label className="text-[10px] font-black uppercase text-slate-400 ml-1">Role Permission Cluster</label>
-                  <select name="role" defaultValue={editingUser.role} className="w-full p-5 bg-slate-50 rounded-[24px] border border-slate-100 outline-none font-black text-[10px] uppercase tracking-widest">
-                    <option value={UserRole.EMPLOYEE}>Employee</option>
-                    <option value={UserRole.HR}>HR Manager</option>
-                    <option value={UserRole.ADMIN}>System Admin</option>
-                  </select>
-              </div>
-              <div className="p-7 bg-slate-900 rounded-[35px] border border-white/10 flex items-center justify-between group cursor-pointer">
-                <div>
-                  <label htmlFor="isAppr" className="text-sm font-black text-white uppercase tracking-widest cursor-pointer">Account Status</label>
-                  <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest mt-0.5">{editingUser.isApproved ? 'AUTHORIZED' : 'ACCESS REVOKED'}</p>
-                </div>
-                <input type="checkbox" name="isApproved" defaultChecked={editingUser.isApproved} className="w-8 h-8 rounded-xl text-blue-500 bg-slate-800 border-none cursor-pointer" id="isAppr" />
-              </div>
-              <div className="flex gap-6 pt-6">
-                <button className="flex-1 bg-blue-600 text-white font-black py-6 rounded-[30px] hover:bg-blue-700 transition shadow-2xl uppercase tracking-[0.2em] text-xs">COMMIT UPDATES</button>
-                <button type="button" onClick={() => setEditingUser(null)} className="flex-1 border-4 border-slate-100 text-slate-400 font-black py-6 rounded-[30px] hover:bg-slate-50 transition uppercase tracking-[0.2em] text-xs">ABORT</button>
-              </div>
-            </form>
-          </div>
-        </div>
+              <Input label="Deployment Deadline" name="deadline" type="date" required />
+            </div>
+            <button type="submit" className="w-full bg-[#00599f] text-white font-black py-6 rounded-[28px] uppercase tracking-widest text-[12px] shadow-2xl">Deploy Mission</button>
+          </form>
+        </Modal>
+      )}
+
+      {showLeaveModal && (
+        <Modal onClose={() => setShowLeaveModal(false)} title="Request Absence">
+          <form onSubmit={handleRequestLeave} className="space-y-8">
+            <div className="grid grid-cols-2 gap-8">
+              <Input label="Commencement" name="startDate" type="date" required />
+              <Input label="Conclusion" name="endDate" type="date" required />
+            </div>
+            <div className="space-y-3">
+                <label className="text-[12px] font-black text-slate-400 uppercase tracking-[0.3em] ml-2">Absence Protocol</label>
+                <select name="type" className="w-full p-5 bg-slate-50 rounded-[28px] border border-slate-100 font-black uppercase text-[11px] tracking-widest outline-none focus:bg-white appearance-none transition-all">
+                  <option value="VACATION">Vacation / Leave</option>
+                  <option value="SICK">Medical Outage</option>
+                  <option value="CASUAL">Personal Matters</option>
+                </select>
+            </div>
+            <Input label="Justification Narrative" name="reason" placeholder="Brief explanation of absence..." required />
+            <button type="submit" className="w-full bg-[#00599f] text-white font-black py-6 rounded-[28px] uppercase tracking-widest text-[12px] shadow-2xl">Transmit Request</button>
+          </form>
+        </Modal>
       )}
 
       {showCamera && (
@@ -677,7 +450,7 @@ const App: React.FC = () => {
             navigator.geolocation.getCurrentPosition(
               (pos) => {
                 db.addAttendance({
-                  id: Math.random().toString(36).substr(2, 9),
+                  id: `att_${Date.now()}`,
                   userId: currentUser!.id,
                   userName: currentUser!.name,
                   checkIn: new Date().toLocaleString(),
@@ -686,19 +459,67 @@ const App: React.FC = () => {
                   faceCapture: data,
                   status: 'PENDING'
                 });
+                refreshState();
                 setShowCamera(false);
-                alert('AUTHENTICATED: Biometric signature and satellite coordinates synced to database.');
               },
-              () => {
-                alert('GPS FAILURE: Physical location anchoring is mandatory for ERP access.');
-                setShowCamera(false);
-              }
+              () => { alert('GPS authorization mandatory.'); setShowCamera(false); }
             );
           }}
           onClose={() => setShowCamera(false)}
         />
       )}
     </Layout>
+  );
+};
+
+const Modal = ({ title, onClose, children }: { title: string, onClose: () => void, children: React.ReactNode }) => (
+  <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-2xl flex items-center justify-center z-[500] p-6 animate-in fade-in zoom-in-95 duration-300">
+    <div className="bg-white rounded-[64px] p-16 max-w-2xl w-full shadow-[0_50px_100px_-20px_rgba(0,0,0,0.2)] overflow-y-auto max-h-[90vh] border border-white relative">
+      <button onClick={onClose} className="absolute top-10 right-10 w-12 h-12 flex items-center justify-center text-slate-400 hover:text-slate-900 bg-slate-50 rounded-full transition">✕</button>
+      <h3 className="text-4xl font-black text-slate-900 mb-2 tracking-tighter font-jakarta">{title}</h3>
+      <p className="text-slate-400 font-medium mb-12">Ram Infosys Gateway Procedure Node</p>
+      {children}
+    </div>
+  </div>
+);
+
+const Input = ({ label, ...props }: any) => (
+  <div className="space-y-3">
+    <label className="text-[12px] font-black text-slate-400 uppercase tracking-[0.3em] ml-2">{label}</label>
+    <input 
+      {...props} 
+      className="w-full p-5 bg-slate-50 rounded-[28px] border border-slate-100 font-black outline-none focus:bg-white focus:border-blue-400 transition-all text-slate-800 placeholder:text-slate-300 shadow-sm" 
+    />
+  </div>
+);
+
+const StatCard = ({ label, value, color, icon }: { label: string, value: number, color: string, icon: string }) => {
+  const iconPaths: Record<string, string> = {
+    users: "M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z",
+    layers: "M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10",
+    clock: "M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z",
+    'check-square': "M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"
+  };
+  const colorStyles: Record<string, string> = {
+    blue: 'bg-[#00599f] shadow-blue-600/30',
+    indigo: 'bg-indigo-600 shadow-indigo-600/30',
+    amber: 'bg-amber-500 shadow-amber-500/30',
+    rose: 'bg-rose-600 shadow-rose-600/30'
+  };
+
+  return (
+    <div className="bg-white p-12 rounded-[64px] border border-slate-100 shadow-[0_12px_30px_rgba(0,0,0,0.02)] relative overflow-hidden group hover:shadow-2xl transition-all duration-700 hover:-translate-y-3">
+      <div className="absolute top-0 right-0 w-32 h-32 bg-slate-50 opacity-[0.5] rounded-full -mr-12 -mt-12 group-hover:scale-150 transition duration-700"></div>
+      <div className="relative z-10">
+        <div className="flex justify-between items-start mb-12">
+          <div className={`${colorStyles[color]} text-white p-5 rounded-[28px] shadow-2xl`}>
+            <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d={iconPaths[icon]}></path></svg>
+          </div>
+        </div>
+        <h4 className="text-7xl font-black text-slate-900 tracking-tighter font-jakarta mb-3 leading-none">{value}</h4>
+        <p className="text-slate-400 text-[11px] font-black uppercase tracking-[0.4em] leading-tight">{label}</p>
+      </div>
+    </div>
   );
 };
 
